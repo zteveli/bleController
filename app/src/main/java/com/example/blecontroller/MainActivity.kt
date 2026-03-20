@@ -117,6 +117,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BleControllerApp(vm: MainViewModel) {
     val tabs = listOf("BLE", "Controller")
