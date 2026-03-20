@@ -440,10 +440,11 @@ private fun ControllerScreen(
         )
     }
 
-    if (showDuplicateDialog && selectedLayout != null) {
+    val currentSelectedLayout = selectedLayout
+    if (showDuplicateDialog && currentSelectedLayout != null) {
         NameInputDialog(
             title = "Layout duplikálása",
-            initial = "${selectedLayout.layout.name} másolat",
+            initial = "${currentSelectedLayout.layout.name} másolat",
             confirmLabel = "Mentés",
             onDismiss = { showDuplicateDialog = false },
             onConfirm = {
