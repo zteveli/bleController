@@ -46,7 +46,6 @@ import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -369,13 +368,13 @@ private fun ControllerScreen(
     val layouts by vm.layouts.collectAsState()
     val selectedLayout by vm.selectedLayout.collectAsState()
     val services by vm.bleManager.gattServices.collectAsState()
-    val connectedDevice by vm.bleManager.connectedDevice.collectAsState()
 
     var showCreateDialog by remember { mutableStateOf(false) }
     var showDuplicateDialog by remember { mutableStateOf(false) }
+    var duplicateTargetLayoutId by remember { mutableStateOf<Long?>(null) }
+    var deleteTargetLayoutId by remember { mutableStateOf<Long?>(null) }
     var editingButtonId by remember { mutableStateOf<Long?>(null) }
     var layoutMenuExpanded by remember { mutableStateOf(false) }
-    val isLayoutLocked = selectedLayout?.layout?.isLocked == true
 
     val editingButton = selectedLayout?.buttons?.firstOrNull { it.id == editingButtonId }
 
@@ -400,38 +399,42 @@ private fun ControllerScreen(
                                     vm.selectLayout(item.layout.id)
                                     layoutMenuExpanded = false
                                 },
+                                trailingIcon = {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        IconButton(
+                                            onClick = {
+                                                duplicateTargetLayoutId = item.layout.id
+                                                showDuplicateDialog = true
+                                                layoutMenuExpanded = false
+                                            },
+                                        ) {
+                                            Icon(Icons.Default.ContentCopy, contentDescription = "Duplicate layout")
+                                        }
+                                        IconButton(
+                                            enabled = layouts.size > 1,
+                                            onClick = {
+                                                deleteTargetLayoutId = item.layout.id
+                                                layoutMenuExpanded = false
+                                            },
+                                        ) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Delete layout")
+                                        }
+                                    }
+                                },
                             )
                         }
-                    }
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    IconButton(
-                        onClick = { vm.addButton() },
-                        enabled = selectedLayout != null && !isLayoutLocked,
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = "Add button")
-                    }
-                    OutlinedButton(onClick = { showCreateDialog = true }) { Text("New layout") }
-                    IconButton(onClick = { showDuplicateDialog = true }, enabled = selectedLayout != null) {
-                        Icon(Icons.Default.ContentCopy, contentDescription = "Duplicate")
-                    }
-                    IconButton(onClick = { vm.deleteSelectedLayout() }, enabled = selectedLayout != null && layouts.size > 1) {
-                        Icon(Icons.Default.Delete, contentDescription = "Delete")
-                    }
-                    IconButton(onClick = { vm.toggleLock() }, enabled = selectedLayout != null) {
-                        Icon(
-                            if (selectedLayout?.layout?.isLocked == true) Icons.Default.Lock else Icons.Default.LockOpen,
-                            contentDescription = "Lock",
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("+ New layout") },
+                            onClick = {
+                                layoutMenuExpanded = false
+                                showCreateDialog = true
+                            },
                         )
-                    }
-                    IconButton(onClick = { vm.bindCurrentDeviceToSelectedLayout() }, enabled = selectedLayout != null && connectedDevice != null) {
-                        Icon(Icons.Default.Save, contentDescription = "Save BLE binding")
                     }
                 }
 
                 selectedLayout?.let { layout ->
-                    Text("Layout locked: ${if (layout.layout.isLocked) "yes" else "no"}")
                     Text(
                         "Bound BLE device: ${layout.layout.boundDeviceName ?: "—"} (${layout.layout.boundDeviceAddress ?: "—"})",
                         style = MaterialTheme.typography.bodySmall,
@@ -449,6 +452,7 @@ private fun ControllerScreen(
                 services = services,
                 onEditButton = { editingButtonId = it },
                 onAddButton = vm::addButton,
+                onToggleLock = vm::toggleLock,
                 onMoveButton = vm::updateButtonPosition,
                 onResizeButton = vm::updateButtonSize,
                 onTriggerWrite = { button ->
@@ -480,16 +484,45 @@ private fun ControllerScreen(
         )
     }
 
-    val currentSelectedLayout = selectedLayout
-    if (showDuplicateDialog && currentSelectedLayout != null) {
+    val duplicateTargetLayout = layouts.firstOrNull { it.layout.id == duplicateTargetLayoutId }
+    if (showDuplicateDialog && duplicateTargetLayout != null) {
         NameInputDialog(
             title = "Duplicate layout",
-            initial = "${currentSelectedLayout.layout.name} copy",
+            initial = "${duplicateTargetLayout.layout.name} copy",
             confirmLabel = "Save",
-            onDismiss = { showDuplicateDialog = false },
-            onConfirm = {
-                vm.duplicateSelectedLayout(it)
+            onDismiss = {
                 showDuplicateDialog = false
+                duplicateTargetLayoutId = null
+            },
+            onConfirm = {
+                vm.duplicateLayoutById(duplicateTargetLayout.layout.id, it)
+                showDuplicateDialog = false
+                duplicateTargetLayoutId = null
+            },
+        )
+    }
+
+    val deleteTargetLayout = layouts.firstOrNull { it.layout.id == deleteTargetLayoutId }
+    if (deleteTargetLayout != null) {
+        AlertDialog(
+            onDismissRequest = { deleteTargetLayoutId = null },
+            title = { Text("Delete layout") },
+            text = { Text("Are you sure you want to delete '${deleteTargetLayout.layout.name}'?") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        vm.deleteLayoutById(deleteTargetLayout.layout.id)
+                        deleteTargetLayoutId = null
+                    },
+                    enabled = layouts.size > 1,
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTargetLayoutId = null }) {
+                    Text("Cancel")
+                }
             },
         )
     }
@@ -518,11 +551,13 @@ private fun ControllerCanvas(
     services: List<GattServiceUi>,
     onEditButton: (Long) -> Unit,
     onAddButton: () -> Unit,
+    onToggleLock: () -> Unit,
     onMoveButton: (Long, Float, Float) -> Unit,
     onResizeButton: (Long, Float, Float) -> Unit,
     onTriggerWrite: (VirtualButtonEntity) -> Unit,
 ) {
     val locked = layout.layout.isLocked
+    val modeColor = if (locked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
 
     Card(
         modifier = modifier,
@@ -540,10 +575,13 @@ private fun ControllerCanvas(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("Controller canvas", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    if (locked) "Live mode" else "Edit mode",
-                    color = if (locked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
-                )
+                IconButton(onClick = onToggleLock) {
+                    Icon(
+                        imageVector = if (locked) Icons.Default.Lock else Icons.Default.LockOpen,
+                        contentDescription = if (locked) "Switch to edit mode" else "Switch to live mode",
+                        tint = modeColor,
+                    )
+                }
             }
             Text(
                 "In edit mode buttons can be moved and resized. In live mode tapping sends a BLE characteristic write.",
@@ -581,16 +619,18 @@ private fun ControllerCanvas(
                     )
                 }
 
-                FloatingActionButton(
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(16.dp),
-                    onClick = { if (!locked) onAddButton() },
-                    containerColor = Color(0xFF1E88E5),
-                    contentColor = Color.White,
-                    elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = "Add button")
+                if (!locked) {
+                    FloatingActionButton(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(16.dp),
+                        onClick = onAddButton,
+                        containerColor = Color(0xFF1E88E5),
+                        contentColor = Color.White,
+                        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Add button")
+                    }
                 }
             }
         }

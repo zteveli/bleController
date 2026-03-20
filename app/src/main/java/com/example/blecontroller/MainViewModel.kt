@@ -71,11 +71,28 @@ class MainViewModel(
         }
     }
 
+    fun duplicateLayoutById(layoutId: Long, newName: String) {
+        val source = layouts.value.firstOrNull { it.layout.id == layoutId } ?: return
+        viewModelScope.launch {
+            selectedLayoutId.value = repository.duplicateLayout(source, newName)
+        }
+    }
+
     fun deleteSelectedLayout() {
         val current = selectedLayout.value ?: return
         viewModelScope.launch {
             repository.deleteLayout(current.layout)
             selectedLayoutId.value = null
+        }
+    }
+
+    fun deleteLayoutById(layoutId: Long) {
+        val target = layouts.value.firstOrNull { it.layout.id == layoutId } ?: return
+        viewModelScope.launch {
+            repository.deleteLayout(target.layout)
+            if (selectedLayoutId.value == layoutId) {
+                selectedLayoutId.value = null
+            }
         }
     }
 
