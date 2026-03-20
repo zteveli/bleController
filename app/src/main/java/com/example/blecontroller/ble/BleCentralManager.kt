@@ -44,7 +44,7 @@ class BleCentralManager(
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
-    private val _statusText = MutableStateFlow("Nincs kapcsolat")
+    private val _statusText = MutableStateFlow("Disconnected")
     val statusText: StateFlow<String> = _statusText.asStateFlow()
 
     fun isBluetoothAvailable(): Boolean = adapter != null
@@ -55,7 +55,7 @@ class BleCentralManager(
         scanMap.clear()
         _scanResults.value = emptyList()
         _isScanning.value = true
-        _statusText.value = "BLE keresés folyamatban"
+        _statusText.value = "Scanning for BLE devices"
         scanner?.startScan(
             null,
             ScanSettings.Builder()
@@ -70,7 +70,7 @@ class BleCentralManager(
         scanner?.stopScan(scanCallback)
         _isScanning.value = false
         if (_connectedDevice.value == null) {
-            _statusText.value = "Keresés leállítva"
+            _statusText.value = "Scan stopped"
         }
     }
 
@@ -86,11 +86,11 @@ class BleCentralManager(
         }
 
         if (device == null) {
-            _statusText.value = "Érvénytelen BLE cím"
+            _statusText.value = "Invalid BLE address"
             return
         }
 
-        _statusText.value = "Csatlakozás: $address"
+        _statusText.value = "Connecting: $address"
         bluetoothGatt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         } else {
@@ -105,7 +105,7 @@ class BleCentralManager(
         bluetoothGatt = null
         _gattServices.value = emptyList()
         _connectedDevice.value = null
-        _statusText.value = "Nincs kapcsolat"
+        _statusText.value = "Disconnected"
     }
 
     @SuppressLint("MissingPermission")
@@ -131,21 +131,11 @@ class BleCentralManager(
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val result = gatt.writeCharacteristic(characteristic, payload, writeType)
             val ok = result == BluetoothStatusCodes.SUCCESS
-            _statusText.value = if (ok) {
-                "Írás elküldve: ${characteristic.uuid}"
-            } else {
-                "Írás sikertelen, hibakód: $result"
-            }
             ok
         } else {
             characteristic.writeType = writeType
             characteristic.value = payload
             val ok = gatt.writeCharacteristic(characteristic)
-            _statusText.value = if (ok) {
-                "Írás elküldve: ${characteristic.uuid}"
-            } else {
-                "Írás sikertelen"
-            }
             ok
         }
     }
@@ -195,7 +185,7 @@ class BleCentralManager(
         }
 
         override fun onScanFailed(errorCode: Int) {
-            _statusText.value = "BLE scan hiba: $errorCode"
+            _statusText.value = "BLE scan error: $errorCode"
             _isScanning.value = false
         }
     }
@@ -211,14 +201,14 @@ class BleCentralManager(
                         rssi = 0,
                     )
                     _connectedDevice.value = current
-                    _statusText.value = "Kapcsolódva, service discovery indul"
+                    _statusText.value = "Connected, discovering services"
                     gatt.discoverServices()
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     _connectedDevice.value = null
                     _gattServices.value = emptyList()
-                    _statusText.value = "Kapcsolat bontva (status=$status)"
+                    _statusText.value = "Disconnected (status=$status)"
                     gatt.close()
                     if (bluetoothGatt == gatt) {
                         bluetoothGatt = null
@@ -230,9 +220,9 @@ class BleCentralManager(
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 _gattServices.value = mapServices(gatt.services)
-                _statusText.value = "GATT service-ek felismerve: ${gatt.services.size}"
+                _statusText.value = "Discovered GATT services: ${gatt.services.size}"
             } else {
-                _statusText.value = "Service discovery hiba: $status"
+                _statusText.value = "Service discovery error: $status"
             }
         }
     }

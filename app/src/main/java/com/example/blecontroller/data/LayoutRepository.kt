@@ -9,7 +9,7 @@ class LayoutRepository(
 
     suspend fun ensureDefaultLayout() {
         if (dao.layoutCount() == 0) {
-            dao.insertLayout(LayoutPresetEntity(name = "Alap layout"))
+            dao.insertLayout(LayoutPresetEntity(name = "Default layout"))
         }
     }
 
@@ -30,11 +30,18 @@ class LayoutRepository(
         dao.deleteLayout(layout)
     }
 
-    suspend fun addButton(layoutId: Long, nextSortOrder: Int): Long {
+    suspend fun addButton(
+        layoutId: Long,
+        nextSortOrder: Int,
+        xFraction: Float = 0.12f,
+        yFraction: Float = 0.12f,
+    ): Long {
         return dao.insertButton(
             VirtualButtonEntity(
                 layoutId = layoutId,
-                label = "Gomb ${nextSortOrder + 1}",
+                label = "Button ${nextSortOrder + 1}",
+                xFraction = xFraction,
+                yFraction = yFraction,
                 sortOrder = nextSortOrder,
             )
         )

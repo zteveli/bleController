@@ -5,7 +5,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.blecontroller.ble.BleCentralManager
-import com.example.blecontroller.data.LayoutPresetEntity
 import com.example.blecontroller.data.LayoutRepository
 import com.example.blecontroller.data.LayoutWithButtons
 import com.example.blecontroller.data.VirtualButtonEntity
@@ -21,6 +20,11 @@ class MainViewModel(
     application: Application,
     private val repository: LayoutRepository,
 ) : AndroidViewModel(application) {
+
+    private companion object {
+        const val NEW_BUTTON_WIDTH_FRACTION = 0.26f
+        const val NEW_BUTTON_HEIGHT_FRACTION = 0.12f
+    }
 
     val bleManager = BleCentralManager(application.applicationContext)
 
@@ -97,11 +101,32 @@ class MainViewModel(
         }
     }
 
+
+    fun addButtonAt(xFraction: Float, yFraction: Float) {
+        val current = selectedLayout.value ?: return
+        val clampedX = xFraction.coerceIn(0f, max(0f, 1f - NEW_BUTTON_WIDTH_FRACTION))
+        val clampedY = yFraction.coerceIn(0f, max(0f, 1f - NEW_BUTTON_HEIGHT_FRACTION))
+        viewModelScope.launch {
+            repository.addButton(
+                layoutId = current.layout.id,
+                nextSortOrder = current.buttons.size,
+                xFraction = clampedX,
+                yFraction = clampedY,
+            )
+        }
+    }
+
     fun addButton() {
         val current = selectedLayout.value ?: return
-        viewModelScope.launch {
-            repository.addButton(current.layout.id, current.buttons.size)
-        }
+        val index = current.buttons.size
+        val gridColumns = 3
+        val startX = 0.06f
+        val startY = 0.08f
+        val stepX = 0.30f
+        val stepY = 0.16f
+        val gridX = startX + (index % gridColumns) * stepX
+        val gridY = startY + (index / gridColumns) * stepY
+        addButtonAt(gridX, gridY)
     }
 
     fun updateButtonConfig(

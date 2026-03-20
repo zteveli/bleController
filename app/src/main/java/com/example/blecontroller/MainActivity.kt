@@ -1,6 +1,9 @@
 package com.example.blecontroller
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -21,7 +24,6 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.absoluteOffset
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -41,6 +43,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
@@ -54,6 +57,8 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -83,6 +88,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -90,12 +96,14 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.ContextCompat
 import com.example.blecontroller.ble.GattCharacteristicUi
 import com.example.blecontroller.ble.GattServiceUi
 import com.example.blecontroller.data.BleControllerDatabase
 import com.example.blecontroller.data.LayoutRepository
 import com.example.blecontroller.data.LayoutWithButtons
 import com.example.blecontroller.data.VirtualButtonEntity
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -125,6 +133,10 @@ private fun BleControllerApp(vm: MainViewModel) {
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val statusText by vm.bleManager.statusText.collectAsState()
+    val context = LocalContext.current
+    val activity = context as? Activity
+    var settingsExpanded by remember { mutableStateOf(false) }
+    var hasRequestedPermissions by rememberSaveable { mutableStateOf(false) }
 
     val permissions = remember {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -142,9 +154,21 @@ private fun BleControllerApp(vm: MainViewModel) {
     ) { result ->
         val granted = result.values.all { it }
         scope.launch {
-            snackbarHostState.showSnackbar(
-                if (granted) "BLE jogosultságok megadva" else "A BLE működéshez jogosultság szükséges",
-            )
+            if (granted) {
+                snackbarHostState.showSnackbar("BLE permissions granted")
+            } else {
+                snackbarHostState.showSnackbar("BLE permissions are required. Closing app...")
+                delay(1200)
+                activity?.finishAffinity()
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (!hasAllPermissions(context, permissions) && !hasRequestedPermissions) {
+            hasRequestedPermissions = true
+            scope.launch { snackbarHostState.showSnackbar("Requesting BLE permissions") }
+            permissionLauncher.launch(permissions)
         }
     }
 
@@ -162,6 +186,20 @@ private fun BleControllerApp(vm: MainViewModel) {
                         style = MaterialTheme.typography.labelMedium,
                     )
                     Spacer(modifier = Modifier.width(12.dp))
+                    Box {
+                        IconButton(onClick = { settingsExpanded = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "Settings")
+                        }
+                        DropdownMenu(expanded = settingsExpanded, onDismissRequest = { settingsExpanded = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Close app") },
+                                onClick = {
+                                    settingsExpanded = false
+                                    activity?.finishAffinity()
+                                },
+                            )
+                        }
+                    }
                 },
             )
         },
@@ -185,7 +223,6 @@ private fun BleControllerApp(vm: MainViewModel) {
             when (selectedTab) {
                 0 -> BleScreen(
                     vm = vm,
-                    requestPermissions = { permissionLauncher.launch(permissions) },
                     showMessage = { message ->
                         scope.launch { snackbarHostState.showSnackbar(message) }
                     },
@@ -205,7 +242,6 @@ private fun BleControllerApp(vm: MainViewModel) {
 @Composable
 private fun BleScreen(
     vm: MainViewModel,
-    requestPermissions: () -> Unit,
     showMessage: (String) -> Unit,
 ) {
     val scanResults by vm.bleManager.scanResults.collectAsState()
@@ -223,17 +259,14 @@ private fun BleScreen(
         item {
             Card {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("BLE jogosultságok és vezérlés", style = MaterialTheme.typography.titleMedium)
+                    Text("BLE permissions and controls", style = MaterialTheme.typography.titleMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = requestPermissions) {
-                            Text("Jogosultságok kérése")
-                        }
                         Button(onClick = { if (isScanning) vm.bleManager.stopScan() else vm.bleManager.startScan() }) {
-                            Text(if (isScanning) "Scan leállítás" else "Scan indítás")
+                            Text(if (isScanning) "Stop scan" else "Start scan")
                         }
                     }
                     if (!vm.bleManager.isBluetoothAvailable()) {
-                        Text("A készülék nem támogatja a BLE-t vagy nincs Bluetooth adapter.")
+                        Text("This device does not support BLE or has no Bluetooth adapter.")
                     }
                 }
             }
@@ -242,24 +275,24 @@ private fun BleScreen(
         item {
             Card {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Aktív kapcsolat", style = MaterialTheme.typography.titleMedium)
+                    Text("Active connection", style = MaterialTheme.typography.titleMedium)
                     if (connectedDevice == null) {
-                        Text("Nincs csatlakoztatott BLE eszköz.")
+                        Text("No BLE device connected.")
                     } else {
-                        Text("Eszköz: ${connectedDevice?.name ?: "Ismeretlen"}")
-                        Text("Cím: ${connectedDevice?.address}")
+                        Text("Device: ${connectedDevice?.name ?: "Unknown"}")
+                        Text("Address: ${connectedDevice?.address}")
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = { vm.bleManager.disconnect() }) {
-                                Text("Kapcsolat bontása")
+                                Text("Disconnect")
                             }
                             Button(
                                 onClick = {
                                     vm.bindCurrentDeviceToSelectedLayout()
-                                    showMessage("Az aktuális eszköz hozzárendelve a kiválasztott layouthoz")
+                                    showMessage("Current device bound to selected layout")
                                 },
                                 enabled = selectedLayout != null,
                             ) {
-                                Text("Hozzárendelés a layouthoz")
+                                Text("Bind to layout")
                             }
                         }
                     }
@@ -268,7 +301,7 @@ private fun BleScreen(
         }
 
         item {
-            Text("Talált eszközök", style = MaterialTheme.typography.titleMedium)
+            Text("Discovered devices", style = MaterialTheme.typography.titleMedium)
         }
 
         items(scanResults, key = { it.address }) { device ->
@@ -281,12 +314,12 @@ private fun BleScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(device.name ?: "Névtelen periféria", fontWeight = FontWeight.SemiBold)
+                        Text(device.name ?: "Unnamed peripheral", fontWeight = FontWeight.SemiBold)
                         Text(device.address, style = MaterialTheme.typography.bodySmall)
                         Text("RSSI: ${device.rssi}", style = MaterialTheme.typography.bodySmall)
                     }
                     Button(onClick = { vm.bleManager.connect(device.address) }) {
-                        Text("Kapcsolódás")
+                        Text("Connect")
                     }
                 }
             }
@@ -294,7 +327,7 @@ private fun BleScreen(
 
         item {
             Spacer(modifier = Modifier.height(8.dp))
-            Text("Felismerte GATT service-ek", style = MaterialTheme.typography.titleMedium)
+            Text("Discovered GATT services", style = MaterialTheme.typography.titleMedium)
         }
 
         items(services, key = { it.uuid }) { service ->
@@ -311,13 +344,13 @@ private fun ServiceCard(service: GattServiceUi) {
             Text(service.uuid, style = MaterialTheme.typography.bodySmall)
             HorizontalDivider()
             if (service.characteristics.isEmpty()) {
-                Text("Nincs characteristic")
+                Text("No characteristics")
             } else {
                 service.characteristics.forEach { ch ->
                     Column {
                         Text(ch.characteristicUuid, style = MaterialTheme.typography.bodyMedium)
                         Text(
-                            if (ch.canWrite) "Írható characteristic" else "Csak olvasható / notify",
+                            if (ch.canWrite) "Writable characteristic" else "Read only / notify",
                             style = MaterialTheme.typography.labelSmall,
                             color = if (ch.canWrite) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -342,6 +375,7 @@ private fun ControllerScreen(
     var showDuplicateDialog by remember { mutableStateOf(false) }
     var editingButtonId by remember { mutableStateOf<Long?>(null) }
     var layoutMenuExpanded by remember { mutableStateOf(false) }
+    val isLayoutLocked = selectedLayout?.layout?.isLocked == true
 
     val editingButton = selectedLayout?.buttons?.firstOrNull { it.id == editingButtonId }
 
@@ -353,10 +387,10 @@ private fun ControllerScreen(
     ) {
         Card {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Layoutok", style = MaterialTheme.typography.titleMedium)
+                Text("Layouts", style = MaterialTheme.typography.titleMedium)
                 Box {
                     OutlinedButton(onClick = { layoutMenuExpanded = true }) {
-                        Text(selectedLayout?.layout?.name ?: "Layout kiválasztása")
+                        Text(selectedLayout?.layout?.name ?: "Select layout")
                     }
                     DropdownMenu(expanded = layoutMenuExpanded, onDismissRequest = { layoutMenuExpanded = false }) {
                         layouts.forEach { item ->
@@ -372,33 +406,34 @@ private fun ControllerScreen(
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    IconButton(onClick = { showCreateDialog = true }) {
-                        Icon(Icons.Default.Add, contentDescription = "Új layout")
+                    IconButton(
+                        onClick = { vm.addButton() },
+                        enabled = selectedLayout != null && !isLayoutLocked,
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Add button")
                     }
+                    OutlinedButton(onClick = { showCreateDialog = true }) { Text("New layout") }
                     IconButton(onClick = { showDuplicateDialog = true }, enabled = selectedLayout != null) {
-                        Icon(Icons.Default.ContentCopy, contentDescription = "Duplikálás")
+                        Icon(Icons.Default.ContentCopy, contentDescription = "Duplicate")
                     }
                     IconButton(onClick = { vm.deleteSelectedLayout() }, enabled = selectedLayout != null && layouts.size > 1) {
-                        Icon(Icons.Default.Delete, contentDescription = "Törlés")
-                    }
-                    IconButton(onClick = { vm.addButton() }, enabled = selectedLayout != null && selectedLayout?.layout?.isLocked == false) {
-                        Icon(Icons.Default.Add, contentDescription = "Gomb hozzáadása")
+                        Icon(Icons.Default.Delete, contentDescription = "Delete")
                     }
                     IconButton(onClick = { vm.toggleLock() }, enabled = selectedLayout != null) {
                         Icon(
                             if (selectedLayout?.layout?.isLocked == true) Icons.Default.Lock else Icons.Default.LockOpen,
-                            contentDescription = "Zárolás",
+                            contentDescription = "Lock",
                         )
                     }
                     IconButton(onClick = { vm.bindCurrentDeviceToSelectedLayout() }, enabled = selectedLayout != null && connectedDevice != null) {
-                        Icon(Icons.Default.Save, contentDescription = "BLE hozzárendelés mentése")
+                        Icon(Icons.Default.Save, contentDescription = "Save BLE binding")
                     }
                 }
 
                 selectedLayout?.let { layout ->
-                    Text("Layout zárolva: ${if (layout.layout.isLocked) "igen" else "nem"}")
+                    Text("Layout locked: ${if (layout.layout.isLocked) "yes" else "no"}")
                     Text(
-                        "Hozzárendelt BLE eszköz: ${layout.layout.boundDeviceName ?: "—"} (${layout.layout.boundDeviceAddress ?: "—"})",
+                        "Bound BLE device: ${layout.layout.boundDeviceName ?: "—"} (${layout.layout.boundDeviceAddress ?: "—"})",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -407,20 +442,25 @@ private fun ControllerScreen(
 
         selectedLayout?.let { layout ->
             ControllerCanvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
                 layout = layout,
                 services = services,
                 onEditButton = { editingButtonId = it },
+                onAddButton = vm::addButton,
                 onMoveButton = vm::updateButtonPosition,
                 onResizeButton = vm::updateButtonSize,
                 onTriggerWrite = { button ->
-                    val ok = vm.triggerButtonWrite(button)
-                    showMessage(if (ok) "BLE írás elküldve" else "BLE írás nem sikerült")
+                    if (!vm.triggerButtonWrite(button)) {
+                        showMessage("Write failed. Check button BLE mapping and payload.")
+                    }
                 },
             )
         } ?: run {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "Nincs kiválasztott layout.",
+                    text = "No layout selected.",
                     modifier = Modifier.padding(16.dp),
                 )
             }
@@ -429,9 +469,9 @@ private fun ControllerScreen(
 
     if (showCreateDialog) {
         NameInputDialog(
-            title = "Új layout",
+            title = "New layout",
             initial = "",
-            confirmLabel = "Létrehozás",
+            confirmLabel = "Create",
             onDismiss = { showCreateDialog = false },
             onConfirm = {
                 vm.createLayout(it)
@@ -443,9 +483,9 @@ private fun ControllerScreen(
     val currentSelectedLayout = selectedLayout
     if (showDuplicateDialog && currentSelectedLayout != null) {
         NameInputDialog(
-            title = "Layout duplikálása",
-            initial = "${currentSelectedLayout.layout.name} másolat",
-            confirmLabel = "Mentés",
+            title = "Duplicate layout",
+            initial = "${currentSelectedLayout.layout.name} copy",
+            confirmLabel = "Save",
             onDismiss = { showDuplicateDialog = false },
             onConfirm = {
                 vm.duplicateSelectedLayout(it)
@@ -473,9 +513,11 @@ private fun ControllerScreen(
 
 @Composable
 private fun ControllerCanvas(
+    modifier: Modifier = Modifier,
     layout: LayoutWithButtons,
     services: List<GattServiceUi>,
     onEditButton: (Long) -> Unit,
+    onAddButton: () -> Unit,
     onMoveButton: (Long, Float, Float) -> Unit,
     onResizeButton: (Long, Float, Float) -> Unit,
     onTriggerWrite: (VirtualButtonEntity) -> Unit,
@@ -483,29 +525,34 @@ private fun ControllerCanvas(
     val locked = layout.layout.isLocked
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
     ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Controller vászon", style = MaterialTheme.typography.titleMedium)
+                Text("Controller canvas", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    if (locked) "Élő mód" else "Szerkesztő mód",
+                    if (locked) "Live mode" else "Edit mode",
                     color = if (locked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
                 )
             }
             Text(
-                "Szerkesztő módban a gombok húzhatók és átméretezhetők. Élő módban koppintáskor BLE characteristic write történik.",
+                "In edit mode buttons can be moved and resized. In live mode tapping sends a BLE characteristic write.",
                 style = MaterialTheme.typography.bodySmall,
             )
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
+                    .weight(1f)
                     .clip(RoundedCornerShape(20.dp))
                     .background(MaterialTheme.colorScheme.surface)
                     .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
@@ -532,6 +579,18 @@ private fun ControllerCanvas(
                         onResized = { w, h -> onResizeButton(button.id, w, h) },
                         onTrigger = { onTriggerWrite(button) },
                     )
+                }
+
+                FloatingActionButton(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp),
+                    onClick = { if (!locked) onAddButton() },
+                    containerColor = Color(0xFF1E88E5),
+                    contentColor = Color.White,
+                    elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Add button")
                 }
             }
         }
@@ -609,7 +668,7 @@ private fun ControllerButton(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = if (button.serviceUuid.isBlank()) "Nincs BLE hozzárendelés" else button.payloadHex,
+                text = if (button.serviceUuid.isBlank()) "No BLE binding" else button.payloadHex,
                 style = MaterialTheme.typography.labelSmall,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -658,7 +717,7 @@ private fun NameInputDialog(
             OutlinedTextField(
                 value = text,
                 onValueChange = { text = it },
-                label = { Text("Név") },
+                label = { Text("Name") },
                 singleLine = true,
             )
         },
@@ -669,7 +728,7 @@ private fun NameInputDialog(
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Mégse")
+                Text("Cancel")
             }
         },
     )
@@ -697,7 +756,7 @@ private fun ButtonEditDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false),
         modifier = Modifier.padding(16.dp),
         onDismissRequest = onDismiss,
-        title = { Text("Virtuális gomb szerkesztése") },
+        title = { Text("Edit virtual button") },
         text = {
             Column(
                 modifier = Modifier
@@ -709,19 +768,19 @@ private fun ButtonEditDialog(
                 OutlinedTextField(
                     value = label,
                     onValueChange = { label = it },
-                    label = { Text("Gomb felirata") },
+                    label = { Text("Button label") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = payloadHex,
                     onValueChange = { payloadHex = it.uppercase() },
-                    label = { Text("HEX payload (pl. 01 vagy A0FF)") },
+                    label = { Text("HEX payload (e.g. 01 or A0FF)") },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Text("Írható characteristic kiválasztása", fontWeight = FontWeight.SemiBold)
+                Text("Select writable characteristic", fontWeight = FontWeight.SemiBold)
                 if (writableCharacteristics.isEmpty()) {
-                    Text("Nincs írható characteristic. Előbb csatlakozz BLE eszközhöz.")
+                    Text("No writable characteristic found. Connect to a BLE device first.")
                 } else {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         writableCharacteristics.forEach { characteristic ->
@@ -742,9 +801,9 @@ private fun ButtonEditDialog(
                         }
                     }
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                    Text("Kijelölt service UUID:")
+                    Text("Selected service UUID:")
                     AssistChip(onClick = {}, label = { Text(selectedServiceUuid.ifBlank { "—" }) })
-                    Text("Kijelölt characteristic UUID:")
+                    Text("Selected characteristic UUID:")
                     AssistChip(onClick = {}, label = { Text(selectedCharacteristicUuid.ifBlank { "—" }) })
                 }
             }
@@ -755,14 +814,21 @@ private fun ButtonEditDialog(
                     onSave(label, selectedServiceUuid, selectedCharacteristicUuid, payloadHex)
                 },
             ) {
-                Text("Mentés")
+                Text("Save")
             }
         },
         dismissButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onDelete) { Text("Törlés") }
-                TextButton(onClick = onDismiss) { Text("Bezárás") }
+                TextButton(onClick = onDelete) { Text("Delete") }
+                TextButton(onClick = onDismiss) { Text("Close") }
             }
         },
     )
 }
+
+private fun hasAllPermissions(context: Context, permissions: Array<String>): Boolean {
+    return permissions.all {
+        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+    }
+}
+
