@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 
 @Database(
     entities = [LayoutPresetEntity::class, VirtualButtonEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class BleControllerDatabase : RoomDatabase() {

@@ -30,18 +30,29 @@ class LayoutRepository(
         dao.deleteLayout(layout)
     }
 
-    suspend fun addButton(
+    suspend fun addControl(
         layoutId: Long,
+        controlType: String,
         nextSortOrder: Int,
         xFraction: Float = 0.12f,
         yFraction: Float = 0.12f,
     ): Long {
+        val defaultWidth = if (controlType == ControlType.SLIDER_VERTICAL) 0.14f else 0.32f
+        val defaultHeight = if (controlType == ControlType.SLIDER_VERTICAL) 0.32f else 0.14f
+        val defaultLabel = when (controlType) {
+            ControlType.SLIDER_HORIZONTAL -> "Slider H ${nextSortOrder + 1}"
+            ControlType.SLIDER_VERTICAL -> "Slider V ${nextSortOrder + 1}"
+            else -> "Button ${nextSortOrder + 1}"
+        }
         return dao.insertButton(
             VirtualButtonEntity(
                 layoutId = layoutId,
-                label = "Button ${nextSortOrder + 1}",
+                label = defaultLabel,
+                controlType = controlType,
                 xFraction = xFraction,
                 yFraction = yFraction,
+                widthFraction = defaultWidth,
+                heightFraction = defaultHeight,
                 sortOrder = nextSortOrder,
             )
         )

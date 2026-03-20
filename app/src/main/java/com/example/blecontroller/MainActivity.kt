@@ -64,6 +64,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -87,6 +88,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -99,12 +101,18 @@ import androidx.core.content.ContextCompat
 import com.example.blecontroller.ble.GattCharacteristicUi
 import com.example.blecontroller.ble.GattServiceUi
 import com.example.blecontroller.data.BleControllerDatabase
+import com.example.blecontroller.data.ControlType
 import com.example.blecontroller.data.LayoutRepository
 import com.example.blecontroller.data.LayoutWithButtons
 import com.example.blecontroller.data.VirtualButtonEntity
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+
+private enum class PayloadInputMode {
+    HEX,
+    TEXT,
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -258,7 +266,7 @@ private fun BleScreen(
         item {
             Card {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("BLE permissions and controls", style = MaterialTheme.typography.titleMedium)
+                    Text("BLE controls", style = MaterialTheme.typography.titleMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = { if (isScanning) vm.bleManager.stopScan() else vm.bleManager.startScan() }) {
                             Text(if (isScanning) "Stop scan" else "Start scan")
@@ -452,9 +460,13 @@ private fun ControllerScreen(
                 services = services,
                 onEditButton = { editingButtonId = it },
                 onAddButton = vm::addButton,
+                onAddHorizontalSlider = vm::addSliderHorizontal,
+                onAddVerticalSlider = vm::addSliderVertical,
                 onToggleLock = vm::toggleLock,
                 onMoveButton = vm::updateButtonPosition,
                 onResizeButton = vm::updateButtonSize,
+                onSliderValueChanged = vm::triggerSliderWrite,
+                onSliderValueCommitted = vm::updateSliderValue,
                 onTriggerWrite = { button ->
                     if (!vm.triggerButtonWrite(button)) {
                         showMessage("Write failed. Check button BLE mapping and payload.")
@@ -532,8 +544,20 @@ private fun ControllerScreen(
             button = editingButton,
             services = services,
             onDismiss = { editingButtonId = null },
-            onSave = { label, serviceUuid, characteristicUuid, payloadHex ->
-                vm.updateButtonConfig(editingButton.id, label, serviceUuid, characteristicUuid, payloadHex)
+            onSave = { label, serviceUuid, characteristicUuid, payloadHex, sliderMin, sliderMax, sliderPrefix ->
+                if (editingButton.controlType == ControlType.BUTTON) {
+                    vm.updateButtonConfig(editingButton.id, label, serviceUuid, characteristicUuid, payloadHex)
+                } else {
+                    vm.updateSliderConfig(
+                        buttonId = editingButton.id,
+                        label = label,
+                        serviceUuid = serviceUuid,
+                        characteristicUuid = characteristicUuid,
+                        sliderMin = sliderMin,
+                        sliderMax = sliderMax,
+                        sliderPrefix = sliderPrefix,
+                    )
+                }
                 editingButtonId = null
             },
             onDelete = {
@@ -551,13 +575,18 @@ private fun ControllerCanvas(
     services: List<GattServiceUi>,
     onEditButton: (Long) -> Unit,
     onAddButton: () -> Unit,
+    onAddHorizontalSlider: () -> Unit,
+    onAddVerticalSlider: () -> Unit,
     onToggleLock: () -> Unit,
     onMoveButton: (Long, Float, Float) -> Unit,
     onResizeButton: (Long, Float, Float) -> Unit,
+    onSliderValueChanged: (Long, Float) -> Unit,
+    onSliderValueCommitted: (Long, Float) -> Unit,
     onTriggerWrite: (VirtualButtonEntity) -> Unit,
 ) {
     val locked = layout.layout.isLocked
     val modeColor = if (locked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
+    var addMenuExpanded by remember(layout.layout.id) { mutableStateOf(false) }
 
     Card(
         modifier = modifier,
@@ -583,10 +612,6 @@ private fun ControllerCanvas(
                     )
                 }
             }
-            Text(
-                "In edit mode buttons can be moved and resized. In live mode tapping sends a BLE characteristic write.",
-                style = MaterialTheme.typography.bodySmall,
-            )
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -615,21 +640,52 @@ private fun ControllerCanvas(
                         onEdit = { onEditButton(button.id) },
                         onMoved = { x, y -> onMoveButton(button.id, x, y) },
                         onResized = { w, h -> onResizeButton(button.id, w, h) },
+                        onSliderValueChanged = onSliderValueChanged,
+                        onSliderValueCommitted = onSliderValueCommitted,
                         onTrigger = { onTriggerWrite(button) },
                     )
                 }
 
                 if (!locked) {
-                    FloatingActionButton(
+                    Box(
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
                             .padding(16.dp),
-                        onClick = onAddButton,
-                        containerColor = Color(0xFF1E88E5),
-                        contentColor = Color.White,
-                        elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
                     ) {
-                        Icon(Icons.Default.Add, contentDescription = "Add button")
+                        FloatingActionButton(
+                            onClick = { addMenuExpanded = true },
+                            containerColor = Color(0xFF1E88E5),
+                            contentColor = Color.White,
+                            elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 6.dp),
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "Add control")
+                        }
+                        DropdownMenu(
+                            expanded = addMenuExpanded,
+                            onDismissRequest = { addMenuExpanded = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Add button") },
+                                onClick = {
+                                    addMenuExpanded = false
+                                    onAddButton()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Add horizontal slider") },
+                                onClick = {
+                                    addMenuExpanded = false
+                                    onAddHorizontalSlider()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Add vertical slider") },
+                                onClick = {
+                                    addMenuExpanded = false
+                                    onAddVerticalSlider()
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -647,18 +703,25 @@ private fun ControllerButton(
     onEdit: () -> Unit,
     onMoved: (Float, Float) -> Unit,
     onResized: (Float, Float) -> Unit,
+    onSliderValueChanged: (Long, Float) -> Unit,
+    onSliderValueCommitted: (Long, Float) -> Unit,
     onTrigger: () -> Unit,
 ) {
     var localX by remember(button.id, button.xFraction) { mutableStateOf(button.xFraction * canvasWidthPx) }
     var localY by remember(button.id, button.yFraction) { mutableStateOf(button.yFraction * canvasHeightPx) }
     var localWidth by remember(button.id, button.widthFraction) { mutableStateOf(button.widthFraction * canvasWidthPx) }
     var localHeight by remember(button.id, button.heightFraction) { mutableStateOf(button.heightFraction * canvasHeightPx) }
+    var localSliderValue by remember(button.id, button.sliderValue) { mutableStateOf(button.sliderValue) }
 
     LaunchedEffect(button.xFraction, button.yFraction, button.widthFraction, button.heightFraction, canvasWidthPx, canvasHeightPx) {
         localX = button.xFraction * canvasWidthPx
         localY = button.yFraction * canvasHeightPx
         localWidth = button.widthFraction * canvasWidthPx
         localHeight = button.heightFraction * canvasHeightPx
+    }
+
+    LaunchedEffect(button.sliderValue) {
+        localSliderValue = button.sliderValue
     }
 
     Box(
@@ -678,7 +741,13 @@ private fun ControllerButton(
             )
             .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(18.dp))
             .combinedClickable(
-                onClick = { if (editMode) onEdit() else onTrigger() },
+                onClick = {
+                    if (button.controlType == ControlType.BUTTON) {
+                        if (editMode) onEdit() else onTrigger()
+                    } else if (editMode) {
+                        onEdit()
+                    }
+                },
                 onLongClick = { onEdit() },
             )
             .pointerInput(editMode, canvasWidthPx, canvasHeightPx, localWidth, localHeight) {
@@ -701,18 +770,70 @@ private fun ControllerButton(
                 .padding(10.dp),
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
-            Text(
-                text = button.label,
-                fontWeight = FontWeight.Bold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = if (button.serviceUuid.isBlank()) "No BLE binding" else button.payloadHex,
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Text(text = button.label, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (button.controlType == ControlType.BUTTON) {
+                Text(
+                    text = if (button.serviceUuid.isBlank()) "No BLE binding" else button.payloadHex,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            } else {
+                if (button.controlType == ControlType.SLIDER_VERTICAL) {
+                    Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        Slider(
+                            value = localSliderValue.coerceIn(button.sliderMin, button.sliderMax),
+                            onValueChange = { newValue ->
+                                localSliderValue = newValue
+                                if (!editMode) onSliderValueChanged(button.id, newValue)
+                            },
+                            onValueChangeFinished = {
+                                if (!editMode) onSliderValueCommitted(button.id, localSliderValue)
+                            },
+                            valueRange = button.sliderMin..button.sliderMax,
+                            enabled = !editMode,
+                            modifier = Modifier.layout { measurable, constraints ->
+                                // Swap width↔height so the slider track length = container height
+                                val placeable = measurable.measure(
+                                    androidx.compose.ui.unit.Constraints(
+                                        minWidth = constraints.minHeight,
+                                        maxWidth = constraints.maxHeight,
+                                        minHeight = constraints.minWidth,
+                                        maxHeight = constraints.maxWidth,
+                                    )
+                                )
+                                layout(placeable.height, placeable.width) {
+                                    placeable.placeWithLayer(
+                                        x = -(placeable.width - placeable.height) / 2,
+                                        y = -(placeable.height - placeable.width) / 2,
+                                    ) {
+                                        rotationZ = -90f
+                                    }
+                                }
+                            },
+                        )
+                    }
+                } else {
+                    Slider(
+                        value = localSliderValue.coerceIn(button.sliderMin, button.sliderMax),
+                        onValueChange = { newValue ->
+                            localSliderValue = newValue
+                            if (!editMode) onSliderValueChanged(button.id, newValue)
+                        },
+                        onValueChangeFinished = {
+                            if (!editMode) onSliderValueCommitted(button.id, localSliderValue)
+                        },
+                        valueRange = button.sliderMin..button.sliderMax,
+                        enabled = !editMode,
+                    )
+                }
+                Text(
+                    text = "${button.sliderPrefix}${localSliderValue.roundToInt()}",
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
 
         if (editMode) {
@@ -723,12 +844,15 @@ private fun ControllerButton(
                     .size(18.dp)
                     .clip(RoundedCornerShape(6.dp))
                     .background(MaterialTheme.colorScheme.primary)
-                    .pointerInput(canvasWidthPx, canvasHeightPx) {
+                    .pointerInput(canvasWidthPx, canvasHeightPx, button.controlType) {
+                        val isSlider = button.controlType != ControlType.BUTTON
+                        val minW = if (isSlider) 40f else 80f
+                        val minH = if (isSlider) 30f else 52f
                         detectDragGestures(
                             onDrag = { change, dragAmount ->
                                 change.consume()
-                                localWidth = (localWidth + dragAmount.x).coerceIn(80f, canvasWidthPx - localX)
-                                localHeight = (localHeight + dragAmount.y).coerceIn(52f, canvasHeightPx - localY)
+                                localWidth = (localWidth + dragAmount.x).coerceIn(minW, canvasWidthPx - localX)
+                                localHeight = (localHeight + dragAmount.y).coerceIn(minH, canvasHeightPx - localY)
                             },
                             onDragEnd = {
                                 onResized(localWidth / canvasWidthPx, localHeight / canvasHeightPx)
@@ -780,11 +904,24 @@ private fun ButtonEditDialog(
     button: VirtualButtonEntity,
     services: List<GattServiceUi>,
     onDismiss: () -> Unit,
-    onSave: (label: String, serviceUuid: String, characteristicUuid: String, payloadHex: String) -> Unit,
+    onSave: (
+        label: String,
+        serviceUuid: String,
+        characteristicUuid: String,
+        payloadHex: String,
+        sliderMin: Float,
+        sliderMax: Float,
+        sliderPrefix: String,
+    ) -> Unit,
     onDelete: () -> Unit,
 ) {
     var label by remember(button.id) { mutableStateOf(button.label) }
     var payloadHex by remember(button.id) { mutableStateOf(button.payloadHex) }
+    var payloadText by remember(button.id) { mutableStateOf(button.payloadHex.hexToReadableUtf8OrNull().orEmpty()) }
+    var payloadMode by remember(button.id) { mutableStateOf(PayloadInputMode.HEX) }
+    var sliderMinText by remember(button.id) { mutableStateOf(button.sliderMin.toString()) }
+    var sliderMaxText by remember(button.id) { mutableStateOf(button.sliderMax.toString()) }
+    var sliderPrefix by remember(button.id) { mutableStateOf(button.sliderPrefix) }
     var selectedServiceUuid by remember(button.id) { mutableStateOf(button.serviceUuid) }
     var selectedCharacteristicUuid by remember(button.id) { mutableStateOf(button.characteristicUuid) }
 
@@ -812,12 +949,68 @@ private fun ButtonEditDialog(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                 )
-                OutlinedTextField(
-                    value = payloadHex,
-                    onValueChange = { payloadHex = it.uppercase() },
-                    label = { Text("HEX payload (e.g. 01 or A0FF)") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                if (button.controlType == ControlType.BUTTON) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = payloadMode == PayloadInputMode.HEX,
+                            onClick = {
+                                payloadHex = payloadText.utf8ToHex()
+                                payloadMode = PayloadInputMode.HEX
+                            },
+                            label = { Text("HEX") },
+                        )
+                        FilterChip(
+                            selected = payloadMode == PayloadInputMode.TEXT,
+                            onClick = {
+                                payloadText = payloadHex.hexToReadableUtf8OrNull().orEmpty()
+                                payloadMode = PayloadInputMode.TEXT
+                            },
+                            label = { Text("Text") },
+                        )
+                    }
+                    OutlinedTextField(
+                        value = if (payloadMode == PayloadInputMode.HEX) payloadHex else payloadText,
+                        onValueChange = {
+                            if (payloadMode == PayloadInputMode.HEX) {
+                                payloadHex = it.uppercase()
+                            } else {
+                                payloadText = it
+                            }
+                        },
+                        label = {
+                            Text(
+                                if (payloadMode == PayloadInputMode.HEX) {
+                                    "HEX payload (e.g. 01 or A0FF)"
+                                } else {
+                                    "Text payload"
+                                }
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = sliderMinText,
+                        onValueChange = { sliderMinText = it },
+                        label = { Text("Minimum value") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = sliderMaxText,
+                        onValueChange = { sliderMaxText = it },
+                        label = { Text("Maximum value") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                    OutlinedTextField(
+                        value = sliderPrefix,
+                        onValueChange = { sliderPrefix = it },
+                        label = { Text("Value prefix") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                }
                 Text("Select writable characteristic", fontWeight = FontWeight.SemiBold)
                 if (writableCharacteristics.isEmpty()) {
                     Text("No writable characteristic found. Connect to a BLE device first.")
@@ -851,7 +1044,20 @@ private fun ButtonEditDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    onSave(label, selectedServiceUuid, selectedCharacteristicUuid, payloadHex)
+                    val payloadForSave = if (payloadMode == PayloadInputMode.HEX) {
+                        payloadHex
+                    } else {
+                        payloadText.utf8ToHex()
+                    }
+                    onSave(
+                        label,
+                        selectedServiceUuid,
+                        selectedCharacteristicUuid,
+                        payloadForSave,
+                        sliderMinText.toFloatOrNull() ?: button.sliderMin,
+                        sliderMaxText.toFloatOrNull() ?: button.sliderMax,
+                        sliderPrefix,
+                    )
                 },
             ) {
                 Text("Save")
@@ -864,6 +1070,28 @@ private fun ButtonEditDialog(
             }
         },
     )
+}
+
+private fun String.utf8ToHex(): String {
+    return toByteArray(Charsets.UTF_8).joinToString(separator = "") { eachByte ->
+        "%02X".format(eachByte.toInt() and 0xFF)
+    }
+}
+
+private fun String.hexToReadableUtf8OrNull(): String? {
+    val cleaned = replace(" ", "").replace("-", "")
+    if (cleaned.isEmpty() || cleaned.length % 2 != 0) return null
+
+    val bytes = runCatching {
+        cleaned.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    }.getOrNull() ?: return null
+
+    val decoded = runCatching { bytes.toString(Charsets.UTF_8) }.getOrNull() ?: return null
+    return if (decoded.any { it.isISOControl() && it != '\n' && it != '\r' && it != '\t' }) {
+        null
+    } else {
+        decoded
+    }
 }
 
 private fun hasAllPermissions(context: Context, permissions: Array<String>): Boolean {
