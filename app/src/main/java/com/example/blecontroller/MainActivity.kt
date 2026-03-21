@@ -44,8 +44,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -63,13 +61,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -114,6 +111,15 @@ private enum class PayloadInputMode {
     HEX,
     TEXT,
 }
+
+private data class ControllerUiState(
+    val showCreateDialog: Boolean = false,
+    val showDuplicateDialog: Boolean = false,
+    val duplicateTargetLayoutId: Long? = null,
+    val deleteTargetLayoutId: Long? = null,
+    val editingButtonId: Long? = null,
+    val layoutMenuExpanded: Boolean = false,
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -218,7 +224,7 @@ private fun BleControllerApp(vm: MainViewModel) {
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            TabRow(selectedTabIndex = selectedTab) {
+            PrimaryTabRow(selectedTabIndex = selectedTab) {
                 tabs.forEachIndexed { index, title ->
                     Tab(
                         selected = selectedTab == index,
@@ -378,14 +384,9 @@ private fun ControllerScreen(
     val selectedLayout by vm.selectedLayout.collectAsState()
     val services by vm.bleManager.gattServices.collectAsState()
 
-    var showCreateDialog by remember { mutableStateOf(false) }
-    var showDuplicateDialog by remember { mutableStateOf(false) }
-    var duplicateTargetLayoutId by remember { mutableStateOf<Long?>(null) }
-    var deleteTargetLayoutId by remember { mutableStateOf<Long?>(null) }
-    var editingButtonId by remember { mutableStateOf<Long?>(null) }
-    var layoutMenuExpanded by remember { mutableStateOf(false) }
+    var uiState by remember { mutableStateOf(ControllerUiState()) }
 
-    val editingButton = selectedLayout?.buttons?.firstOrNull { it.id == editingButtonId }
+    val editingButton = selectedLayout?.buttons?.firstOrNull { it.id == uiState.editingButtonId }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val controllerViewportHeight = maxHeight
@@ -397,64 +398,23 @@ private fun ControllerScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Card {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Layouts", style = MaterialTheme.typography.titleMedium)
-                Box {
-                    OutlinedButton(onClick = { layoutMenuExpanded = true }) {
-                        Text(selectedLayout?.layout?.name ?: "Select layout")
-                    }
-                    DropdownMenu(expanded = layoutMenuExpanded, onDismissRequest = { layoutMenuExpanded = false }) {
-                        layouts.forEach { item ->
-                            DropdownMenuItem(
-                                text = { Text(item.layout.name) },
-                                onClick = {
-                                    vm.selectLayout(item.layout.id)
-                                    layoutMenuExpanded = false
-                                },
-                                trailingIcon = {
-                                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        IconButton(
-                                            onClick = {
-                                                duplicateTargetLayoutId = item.layout.id
-                                                showDuplicateDialog = true
-                                                layoutMenuExpanded = false
-                                            },
-                                        ) {
-                                            Icon(Icons.Default.ContentCopy, contentDescription = "Duplicate layout")
-                                        }
-                                        IconButton(
-                                            enabled = layouts.size > 1,
-                                            onClick = {
-                                                deleteTargetLayoutId = item.layout.id
-                                                layoutMenuExpanded = false
-                                            },
-                                        ) {
-                                            Icon(Icons.Default.Delete, contentDescription = "Delete layout")
-                                        }
-                                    }
-                                },
-                            )
-                        }
-                        HorizontalDivider()
-                        DropdownMenuItem(
-                            text = { Text("+ New layout") },
-                            onClick = {
-                                layoutMenuExpanded = false
-                                showCreateDialog = true
-                            },
-                        )
-                    }
-                }
-
-                selectedLayout?.let { layout ->
-                    Text(
-                        "Bound BLE device: ${layout.layout.boundDeviceName ?: "—"} (${layout.layout.boundDeviceAddress ?: "—"})",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-            }
-        }
+        LayoutsCard(
+            layouts = layouts,
+            selectedLayout = selectedLayout,
+            layoutMenuExpanded = uiState.layoutMenuExpanded,
+            onLayoutMenuExpandedChange = { expanded -> uiState = uiState.copy(layoutMenuExpanded = expanded) },
+            onSelectLayout = vm::selectLayout,
+            onDuplicateLayoutRequest = { layoutId ->
+                uiState = uiState.copy(
+                    duplicateTargetLayoutId = layoutId,
+                    showDuplicateDialog = true,
+                )
+            },
+            onDeleteLayoutRequest = { layoutId ->
+                uiState = uiState.copy(deleteTargetLayoutId = layoutId)
+            },
+            onCreateLayoutRequest = { uiState = uiState.copy(showCreateDialog = true) },
+        )
 
         selectedLayout?.let { layout ->
             ControllerCanvas(
@@ -463,7 +423,7 @@ private fun ControllerScreen(
                 whiteCanvasHeight = controllerViewportHeight,
                 layout = layout,
                 services = services,
-                onEditButton = { editingButtonId = it },
+                onEditButton = { buttonId -> uiState = uiState.copy(editingButtonId = buttonId) },
                 onAddButton = vm::addButton,
                 onAddHorizontalSlider = vm::addSliderHorizontal,
                 onAddVerticalSlider = vm::addSliderVertical,
@@ -489,67 +449,54 @@ private fun ControllerScreen(
     } // Column
     } // BoxWithConstraints
 
-    if (showCreateDialog) {
+    if (uiState.showCreateDialog) {
         NameInputDialog(
             title = "New layout",
             initial = "",
             confirmLabel = "Create",
-            onDismiss = { showCreateDialog = false },
+            onDismiss = { uiState = uiState.copy(showCreateDialog = false) },
             onConfirm = {
                 vm.createLayout(it)
-                showCreateDialog = false
+                uiState = uiState.copy(showCreateDialog = false)
             },
         )
     }
 
-    val duplicateTargetLayout = layouts.firstOrNull { it.layout.id == duplicateTargetLayoutId }
-    if (showDuplicateDialog && duplicateTargetLayout != null) {
-        NameInputDialog(
-            title = "Duplicate layout",
-            initial = "${duplicateTargetLayout.layout.name} copy",
-            confirmLabel = "Save",
-            onDismiss = {
-                showDuplicateDialog = false
-                duplicateTargetLayoutId = null
-            },
-            onConfirm = {
-                vm.duplicateLayoutById(duplicateTargetLayout.layout.id, it)
-                showDuplicateDialog = false
-                duplicateTargetLayoutId = null
-            },
-        )
-    }
+    val duplicateTargetLayout = layouts.firstOrNull { it.layout.id == uiState.duplicateTargetLayoutId }
+    DuplicateLayoutDialog(
+        targetLayout = duplicateTargetLayout,
+        show = uiState.showDuplicateDialog,
+        onDismiss = {
+            uiState = uiState.copy(
+                showDuplicateDialog = false,
+                duplicateTargetLayoutId = null,
+            )
+        },
+        onConfirm = { layoutId, newName ->
+            vm.duplicateLayoutById(layoutId, newName)
+            uiState = uiState.copy(
+                showDuplicateDialog = false,
+                duplicateTargetLayoutId = null,
+            )
+        },
+    )
 
-    val deleteTargetLayout = layouts.firstOrNull { it.layout.id == deleteTargetLayoutId }
-    if (deleteTargetLayout != null) {
-        AlertDialog(
-            onDismissRequest = { deleteTargetLayoutId = null },
-            title = { Text("Delete layout") },
-            text = { Text("Are you sure you want to delete '${deleteTargetLayout.layout.name}'?") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        vm.deleteLayoutById(deleteTargetLayout.layout.id)
-                        deleteTargetLayoutId = null
-                    },
-                    enabled = layouts.size > 1,
-                ) {
-                    Text("Delete")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { deleteTargetLayoutId = null }) {
-                    Text("Cancel")
-                }
-            },
-        )
-    }
+    val deleteTargetLayout = layouts.firstOrNull { it.layout.id == uiState.deleteTargetLayoutId }
+    DeleteLayoutDialog(
+        targetLayout = deleteTargetLayout,
+        canDelete = layouts.size > 1,
+        onDismiss = { uiState = uiState.copy(deleteTargetLayoutId = null) },
+        onConfirm = { layoutId ->
+            vm.deleteLayoutById(layoutId)
+            uiState = uiState.copy(deleteTargetLayoutId = null)
+        },
+    )
 
     if (editingButton != null) {
         ButtonEditDialog(
             button = editingButton,
             services = services,
-            onDismiss = { editingButtonId = null },
+            onDismiss = { uiState = uiState.copy(editingButtonId = null) },
             onSave = { label, serviceUuid, characteristicUuid, payloadHex, sliderMin, sliderMax, sliderPrefix ->
                 if (editingButton.controlType == ControlType.BUTTON) {
                     vm.updateButtonConfig(editingButton.id, label, serviceUuid, characteristicUuid, payloadHex)
@@ -564,14 +511,134 @@ private fun ControllerScreen(
                         sliderPrefix = sliderPrefix,
                     )
                 }
-                editingButtonId = null
+                uiState = uiState.copy(editingButtonId = null)
             },
             onDelete = {
                 vm.deleteButton(editingButton.id)
-                editingButtonId = null
+                uiState = uiState.copy(editingButtonId = null)
             },
         )
     }
+}
+
+@Composable
+private fun LayoutsCard(
+    layouts: List<LayoutWithButtons>,
+    selectedLayout: LayoutWithButtons?,
+    layoutMenuExpanded: Boolean,
+    onLayoutMenuExpandedChange: (Boolean) -> Unit,
+    onSelectLayout: (Long) -> Unit,
+    onDuplicateLayoutRequest: (Long) -> Unit,
+    onDeleteLayoutRequest: (Long) -> Unit,
+    onCreateLayoutRequest: () -> Unit,
+) {
+    Card {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Layouts", style = MaterialTheme.typography.titleMedium)
+            Box {
+                OutlinedButton(onClick = { onLayoutMenuExpandedChange(true) }) {
+                    Text(selectedLayout?.layout?.name ?: "Select layout")
+                }
+                DropdownMenu(
+                    expanded = layoutMenuExpanded,
+                    onDismissRequest = { onLayoutMenuExpandedChange(false) },
+                ) {
+                    layouts.forEach { item ->
+                        DropdownMenuItem(
+                            text = { Text(item.layout.name) },
+                            onClick = {
+                                onSelectLayout(item.layout.id)
+                                onLayoutMenuExpandedChange(false)
+                            },
+                            trailingIcon = {
+                                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    IconButton(
+                                        onClick = {
+                                            onDuplicateLayoutRequest(item.layout.id)
+                                            onLayoutMenuExpandedChange(false)
+                                        },
+                                    ) {
+                                        Icon(Icons.Default.ContentCopy, contentDescription = "Duplicate layout")
+                                    }
+                                    IconButton(
+                                        enabled = layouts.size > 1,
+                                        onClick = {
+                                            onDeleteLayoutRequest(item.layout.id)
+                                            onLayoutMenuExpandedChange(false)
+                                        },
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Delete layout")
+                                    }
+                                }
+                            },
+                        )
+                    }
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = { Text("+ New layout") },
+                        onClick = {
+                            onLayoutMenuExpandedChange(false)
+                            onCreateLayoutRequest()
+                        },
+                    )
+                }
+            }
+
+            selectedLayout?.let { layout ->
+                Text(
+                    "Bound BLE device: ${layout.layout.boundDeviceName ?: "—"} (${layout.layout.boundDeviceAddress ?: "—"})",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DuplicateLayoutDialog(
+    targetLayout: LayoutWithButtons?,
+    show: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (layoutId: Long, newName: String) -> Unit,
+) {
+    if (!show || targetLayout == null) return
+
+    NameInputDialog(
+        title = "Duplicate layout",
+        initial = "${targetLayout.layout.name} copy",
+        confirmLabel = "Save",
+        onDismiss = onDismiss,
+        onConfirm = { onConfirm(targetLayout.layout.id, it) },
+    )
+}
+
+@Composable
+private fun DeleteLayoutDialog(
+    targetLayout: LayoutWithButtons?,
+    canDelete: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (layoutId: Long) -> Unit,
+) {
+    if (targetLayout == null) return
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete layout") },
+        text = { Text("Are you sure you want to delete '${targetLayout.layout.name}'?") },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(targetLayout.layout.id) },
+                enabled = canDelete,
+            ) {
+                Text("Delete")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
 }
 
 @Composable
@@ -834,12 +901,7 @@ private fun ControllerButton(
                         enabled = !editMode,
                     )
                 }
-                Text(
-                    text = "${button.sliderPrefix}${localSliderValue.roundToInt()}",
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Spacer(modifier = Modifier.height(4.dp))
             }
         }
 
