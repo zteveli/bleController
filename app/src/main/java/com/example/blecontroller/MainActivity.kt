@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -74,6 +73,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -94,9 +94,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.content.ContextCompat
@@ -125,6 +125,9 @@ private data class ControllerUiState(
     val layoutMenuExpanded: Boolean = false,
 )
 
+private const val MIN_GRID_COLUMNS = 10
+private const val MAX_GRID_COLUMNS = 30
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -148,12 +151,17 @@ class MainActivity : ComponentActivity() {
 private fun BleControllerApp(vm: MainViewModel) {
     val tabs = listOf("BLE", "Controller")
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var gridColumns by rememberSaveable { mutableIntStateOf(MAX_GRID_COLUMNS) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val statusText by vm.bleManager.statusText.collectAsState()
     val context = LocalContext.current
     val activity = context as? Activity
     var settingsExpanded by remember { mutableStateOf(false) }
+    var showGridSizeDialog by remember { mutableStateOf(false) }
+    val closeGridSizeDialog = {
+        if (showGridSizeDialog) showGridSizeDialog = false
+    }
     var hasRequestedPermissions by rememberSaveable { mutableStateOf(false) }
 
     val permissions = remember {
@@ -210,6 +218,13 @@ private fun BleControllerApp(vm: MainViewModel) {
                         }
                         DropdownMenu(expanded = settingsExpanded, onDismissRequest = { settingsExpanded = false }) {
                             DropdownMenuItem(
+                                text = { Text("Grid size ($gridColumns)") },
+                                onClick = {
+                                    settingsExpanded = false
+                                    showGridSizeDialog = true
+                                },
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Close app") },
                                 onClick = {
                                     settingsExpanded = false
@@ -248,12 +263,24 @@ private fun BleControllerApp(vm: MainViewModel) {
 
                 1 -> ControllerScreen(
                     vm = vm,
+                    gridColumns = gridColumns,
                     showMessage = { message ->
                         scope.launch { snackbarHostState.showSnackbar(message) }
                     },
                 )
             }
         }
+    }
+
+    if (showGridSizeDialog) {
+        GridSizeDialog(
+            value = gridColumns,
+            onDismiss = closeGridSizeDialog,
+            onConfirm = {
+                gridColumns = it.coerceIn(MIN_GRID_COLUMNS, MAX_GRID_COLUMNS)
+                closeGridSizeDialog()
+            },
+        )
     }
 }
 
@@ -382,6 +409,7 @@ private fun ServiceCard(service: GattServiceUi) {
 @Composable
 private fun ControllerScreen(
     vm: MainViewModel,
+    gridColumns: Int,
     showMessage: (String) -> Unit,
 ) {
     val layouts by vm.layouts.collectAsState()
@@ -425,6 +453,7 @@ private fun ControllerScreen(
                 modifier = Modifier
                     .fillMaxWidth(),
                 whiteCanvasHeight = controllerViewportHeight,
+                gridColumns = gridColumns,
                 layout = layout,
                 services = services,
                 onEditButton = { buttonId -> uiState = uiState.copy(editingButtonId = buttonId) },
@@ -649,6 +678,7 @@ private fun DeleteLayoutDialog(
 private fun ControllerCanvas(
     modifier: Modifier = Modifier,
     whiteCanvasHeight: Dp,
+    gridColumns: Int,
     layout: LayoutWithButtons,
     services: List<GattServiceUi>,
     onEditButton: (Long) -> Unit,
@@ -700,14 +730,26 @@ private fun ControllerCanvas(
             ) {
                 val canvasWidthPx = with(LocalDensity.current) { maxWidth.toPx() }
                 val canvasHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
-                val gridStepPx = (canvasWidthPx / 30f).coerceAtLeast(1f)
+                val columns = gridColumns.coerceIn(MIN_GRID_COLUMNS, MAX_GRID_COLUMNS)
+                val gridStepPx = (canvasWidthPx / columns.toFloat()).coerceAtLeast(1f)
+                val writableKeys = remember(services) {
+                    buildSet {
+                        services.forEach { service ->
+                            service.characteristics.forEach { characteristic ->
+                                if (characteristic.canWrite) {
+                                    add(writeBindingKey(service.uuid, characteristic.characteristicUuid))
+                                }
+                            }
+                        }
+                    }
+                }
 
                 if (!locked) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .drawWithCache {
-                                val step = (size.width / 30f).coerceAtLeast(1f)
+                                val step = gridStepPx
                                 val gridColor = Color.LightGray.copy(alpha = 0.35f)
                                 val gridPath = Path().apply {
                                     var x = 0f
@@ -736,27 +778,26 @@ private fun ControllerCanvas(
                 }
 
                 layout.buttons.forEach { button ->
-                    val supportsWrite = services.any { service ->
-                        service.uuid.equals(button.serviceUuid, ignoreCase = true) &&
-                            service.characteristics.any {
-                                it.characteristicUuid.equals(button.characteristicUuid, ignoreCase = true) && it.canWrite
-                            }
-                    }
+                    key(button.id) {
+                        val supportsWrite = writableKeys.contains(
+                            writeBindingKey(button.serviceUuid, button.characteristicUuid)
+                        )
 
-                    ControllerButton(
-                        button = button,
-                        canvasWidthPx = canvasWidthPx,
-                        canvasHeightPx = canvasHeightPx,
-                        gridStepPx = gridStepPx,
-                        editMode = !locked,
-                        supportsWrite = supportsWrite,
-                        onEdit = { onEditButton(button.id) },
-                        onMoved = { x, y -> onMoveButton(button.id, x, y) },
-                        onResized = { w, h -> onResizeButton(button.id, w, h) },
-                        onSliderValueChanged = onSliderValueChanged,
-                        onSliderValueCommitted = onSliderValueCommitted,
-                        onTrigger = { onTriggerWrite(button) },
-                    )
+                        ControllerButton(
+                            button = button,
+                            canvasWidthPx = canvasWidthPx,
+                            canvasHeightPx = canvasHeightPx,
+                            gridStepPx = gridStepPx,
+                            editMode = !locked,
+                            supportsWrite = supportsWrite,
+                            onEdit = { onEditButton(button.id) },
+                            onMoved = { x, y -> onMoveButton(button.id, x, y) },
+                            onResized = { w, h -> onResizeButton(button.id, w, h) },
+                            onSliderValueChanged = onSliderValueChanged,
+                            onSliderValueCommitted = onSliderValueCommitted,
+                            onTrigger = { onTriggerWrite(button) },
+                        )
+                    }
                 }
 
                 if (!locked) {
@@ -843,11 +884,17 @@ private fun ControllerButton(
     val latestGridStep by rememberUpdatedState(gridStepPx)
     val latestLocalWidth by rememberUpdatedState(localWidth)
     val latestLocalHeight by rememberUpdatedState(localHeight)
+    val latestLocalX by rememberUpdatedState(localX)
+    val latestLocalY by rememberUpdatedState(localY)
     val latestOnMoved by rememberUpdatedState(onMoved)
+    val latestOnResized by rememberUpdatedState(onResized)
 
     Box(
         modifier = Modifier
-            .absoluteOffset { IntOffset(localX.roundToInt(), localY.roundToInt()) }
+            .graphicsLayer {
+                translationX = localX
+                translationY = localY
+            }
             .size(
                 width = with(LocalDensity.current) { localWidth.toDp() },
                 height = with(LocalDensity.current) { localHeight.toDp() },
@@ -992,41 +1039,54 @@ private fun ControllerButton(
                     .size(18.dp)
                     .clip(RoundedCornerShape(6.dp))
                     .background(MaterialTheme.colorScheme.primary)
-                    .pointerInput(canvasWidthPx, canvasHeightPx, button.controlType, gridStepPx) {
+                    .pointerInput(button.id, editMode, button.controlType) {
                         val isSlider = button.controlType != ControlType.BUTTON
                         val minW = if (isSlider) 40f else 80f
                         val minH = if (isSlider) 30f else 52f
                         var rawWidth = localWidth
                         var rawHeight = localHeight
+                        var snappedCellWidth = Int.MIN_VALUE
+                        var snappedCellHeight = Int.MIN_VALUE
                         detectDragGestures(
                             onDragStart = {
                                 rawWidth = localWidth
                                 rawHeight = localHeight
+                                val step = latestGridStep.coerceAtLeast(1f)
+                                snappedCellWidth = (rawWidth / step).roundToInt()
+                                snappedCellHeight = (rawHeight / step).roundToInt()
                             },
                             onDrag = { change, dragAmount ->
                                 change.consume()
-                                val widthBound = (canvasWidthPx - localX).coerceAtLeast(1f)
-                                val heightBound = (canvasHeightPx - localY).coerceAtLeast(1f)
+                                val widthBound = (latestCanvasWidth - latestLocalX).coerceAtLeast(1f)
+                                val heightBound = (latestCanvasHeight - latestLocalY).coerceAtLeast(1f)
                                 val minWidthBound = minW.coerceAtMost(widthBound)
                                 val minHeightBound = minH.coerceAtMost(heightBound)
+                                val step = latestGridStep.coerceAtLeast(1f)
 
                                 rawWidth = (rawWidth + dragAmount.x).coerceIn(minWidthBound, widthBound)
                                 rawHeight = (rawHeight + dragAmount.y).coerceIn(minHeightBound, heightBound)
 
-                                val snappedWidth = snapToGrid(rawWidth, gridStepPx).coerceIn(minWidthBound, widthBound)
-                                val snappedHeight = snapToGrid(rawHeight, gridStepPx).coerceIn(minHeightBound, heightBound)
+                                val cellWidth = (rawWidth / step).roundToInt()
+                                val cellHeight = (rawHeight / step).roundToInt()
 
-                                if (snappedWidth != localWidth) localWidth = snappedWidth
-                                if (snappedHeight != localHeight) localHeight = snappedHeight
+                                if (cellWidth != snappedCellWidth) {
+                                    snappedCellWidth = cellWidth
+                                    localWidth = (cellWidth * step).coerceIn(minWidthBound, widthBound)
+                                }
+                                if (cellHeight != snappedCellHeight) {
+                                    snappedCellHeight = cellHeight
+                                    localHeight = (cellHeight * step).coerceIn(minHeightBound, heightBound)
+                                }
                             },
                             onDragEnd = {
-                                val widthBound = (canvasWidthPx - localX).coerceAtLeast(1f)
-                                val heightBound = (canvasHeightPx - localY).coerceAtLeast(1f)
+                                val widthBound = (latestCanvasWidth - latestLocalX).coerceAtLeast(1f)
+                                val heightBound = (latestCanvasHeight - latestLocalY).coerceAtLeast(1f)
                                 val minWidthBound = minW.coerceAtMost(widthBound)
                                 val minHeightBound = minH.coerceAtMost(heightBound)
-                                localWidth = snapToGrid(rawWidth, gridStepPx).coerceIn(minWidthBound, widthBound)
-                                localHeight = snapToGrid(rawHeight, gridStepPx).coerceIn(minHeightBound, heightBound)
-                                onResized(localWidth / canvasWidthPx, localHeight / canvasHeightPx)
+                                val step = latestGridStep.coerceAtLeast(1f)
+                                localWidth = snapToGrid(rawWidth, step).coerceIn(minWidthBound, widthBound)
+                                localHeight = snapToGrid(rawHeight, step).coerceIn(minHeightBound, heightBound)
+                                latestOnResized(localWidth / latestCanvasWidth, localHeight / latestCanvasHeight)
                             },
                         )
                     },
@@ -1059,6 +1119,41 @@ private fun NameInputDialog(
         confirmButton = {
             Button(onClick = { onConfirm(text.ifBlank { title }) }) {
                 Text(confirmLabel)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
+}
+
+@Composable
+private fun GridSizeDialog(
+    value: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (Int) -> Unit,
+) {
+    var sliderValue by remember(value) { mutableStateOf(value.toFloat()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Grid size") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Columns: ${sliderValue.roundToInt()}")
+                Slider(
+                    value = sliderValue,
+                    onValueChange = { sliderValue = it },
+                    valueRange = MIN_GRID_COLUMNS.toFloat()..MAX_GRID_COLUMNS.toFloat(),
+                    steps = (MAX_GRID_COLUMNS - MIN_GRID_COLUMNS) - 1,
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onConfirm(sliderValue.roundToInt()) }) {
+                Text("Apply")
             }
         },
         dismissButton = {
@@ -1268,6 +1363,10 @@ private fun String.hexToReadableUtf8OrNull(): String? {
 private fun snapToGrid(value: Float, gridStepPx: Float): Float {
     if (gridStepPx <= 0f) return value
     return (value / gridStepPx).roundToInt() * gridStepPx
+}
+
+private fun writeBindingKey(serviceUuid: String, characteristicUuid: String): String {
+    return serviceUuid.lowercase() + "|" + characteristicUuid.lowercase()
 }
 
 private fun hasAllPermissions(context: Context, permissions: Array<String>): Boolean {

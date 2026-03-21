@@ -7,10 +7,12 @@ A Kotlin + Jetpack Compose based customizable BLE controller app for Android.
 - Scan and connect to BLE devices
 - Automatic GATT service/characteristic discovery
 - Only writable characteristics are offered for button mapping
-- Create, move, and resize virtual buttons
+- Create, move, and resize virtual buttons with grid snapping
+- Configurable controller grid size from app menu (10-30 columns)
 - Lock and unlock layouts
 - Persist layouts and BLE device bindings in a Room database
 - Reload and duplicate saved layouts
+- Launcher icon mapped to the app adaptive icon resources
 
 ## Technical choices
 
@@ -38,5 +40,6 @@ The app currently implements GATT **characteristic** writes. If you also need de
 3. On the **Controller** tab, create a layout.
 4. In unlocked mode, tap the canvas and use the **Add button** bubble.
 5. In edit mode, tap a button and assign a writable characteristic and HEX payload.
-6. Drag buttons to reposition and use the bottom-right handle to resize.
-7. Lock the layout to use buttons in live mode (BLE characteristic write on tap).
+6. Open the top-right app menu and set **Grid size** (10-30) to adjust snapping density.
+7. Drag buttons to reposition and use the bottom-right handle to resize (both snap to grid).
+8. Lock the layout to use buttons in live mode (BLE characteristic write on tap).

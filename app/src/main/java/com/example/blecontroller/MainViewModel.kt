@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -30,6 +31,7 @@ class MainViewModel(
         const val NEW_BUTTON_WIDTH_FRACTION = 0.26f
         const val NEW_BUTTON_HEIGHT_FRACTION = 0.12f
         const val SLIDER_SEND_MIN_INTERVAL_MS = 20L
+        const val FRACTION_EPSILON = 0.0005f
     }
 
     private val sliderWriteJobs = mutableMapOf<Long, Job>()
@@ -282,11 +284,16 @@ class MainViewModel(
 
     fun updateButtonPosition(buttonId: Long, xFraction: Float, yFraction: Float) {
         val button = selectedLayout.value?.buttons?.firstOrNull { it.id == buttonId } ?: return
+        val newX = xFraction.coerceIn(0f, max(0f, 1f - button.widthFraction))
+        val newY = yFraction.coerceIn(0f, max(0f, 1f - button.heightFraction))
+        if (abs(button.xFraction - newX) < FRACTION_EPSILON && abs(button.yFraction - newY) < FRACTION_EPSILON) {
+            return
+        }
         viewModelScope.launch {
             repository.updateButton(
                 button.copy(
-                    xFraction = xFraction.coerceIn(0f, max(0f, 1f - button.widthFraction)),
-                    yFraction = yFraction.coerceIn(0f, max(0f, 1f - button.heightFraction)),
+                    xFraction = newX,
+                    yFraction = newY,
                 )
             )
         }
@@ -301,13 +308,23 @@ class MainViewModel(
         val minHeight = if (isSlider) 0.06f else 0.08f
         val newWidth = widthFraction.coerceIn(minWidth, maxWidth)
         val newHeight = heightFraction.coerceIn(minHeight, maxHeight)
+        val newX = button.xFraction.coerceIn(0f, 1f - newWidth)
+        val newY = button.yFraction.coerceIn(0f, 1f - newHeight)
+        if (
+            abs(button.widthFraction - newWidth) < FRACTION_EPSILON &&
+            abs(button.heightFraction - newHeight) < FRACTION_EPSILON &&
+            abs(button.xFraction - newX) < FRACTION_EPSILON &&
+            abs(button.yFraction - newY) < FRACTION_EPSILON
+        ) {
+            return
+        }
         viewModelScope.launch {
             repository.updateButton(
                 button.copy(
                     widthFraction = newWidth,
                     heightFraction = newHeight,
-                    xFraction = button.xFraction.coerceIn(0f, 1f - newWidth),
-                    yFraction = button.yFraction.coerceIn(0f, 1f - newHeight),
+                    xFraction = newX,
+                    yFraction = newY,
                 )
             )
         }
