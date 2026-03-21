@@ -78,12 +78,16 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
@@ -696,6 +700,40 @@ private fun ControllerCanvas(
             ) {
                 val canvasWidthPx = with(LocalDensity.current) { maxWidth.toPx() }
                 val canvasHeightPx = with(LocalDensity.current) { maxHeight.toPx() }
+                val gridStepPx = (canvasWidthPx / 30f).coerceAtLeast(1f)
+
+                if (!locked) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .drawWithCache {
+                                val step = (size.width / 30f).coerceAtLeast(1f)
+                                val gridColor = Color.LightGray.copy(alpha = 0.35f)
+                                val gridPath = Path().apply {
+                                    var x = 0f
+                                    while (x <= size.width) {
+                                        moveTo(x, 0f)
+                                        lineTo(x, size.height)
+                                        x += step
+                                    }
+
+                                    var y = 0f
+                                    while (y <= size.height) {
+                                        moveTo(0f, y)
+                                        lineTo(size.width, y)
+                                        y += step
+                                    }
+                                }
+                                onDrawBehind {
+                                    drawPath(
+                                        path = gridPath,
+                                        color = gridColor,
+                                        style = Stroke(width = 1f),
+                                    )
+                                }
+                            },
+                    )
+                }
 
                 layout.buttons.forEach { button ->
                     val supportsWrite = services.any { service ->
@@ -709,6 +747,7 @@ private fun ControllerCanvas(
                         button = button,
                         canvasWidthPx = canvasWidthPx,
                         canvasHeightPx = canvasHeightPx,
+                        gridStepPx = gridStepPx,
                         editMode = !locked,
                         supportsWrite = supportsWrite,
                         onEdit = { onEditButton(button.id) },
@@ -772,6 +811,7 @@ private fun ControllerButton(
     button: VirtualButtonEntity,
     canvasWidthPx: Float,
     canvasHeightPx: Float,
+    gridStepPx: Float,
     editMode: Boolean,
     supportsWrite: Boolean,
     onEdit: () -> Unit,
@@ -797,6 +837,13 @@ private fun ControllerButton(
     LaunchedEffect(button.sliderValue) {
         localSliderValue = button.sliderValue
     }
+
+    val latestCanvasWidth by rememberUpdatedState(canvasWidthPx)
+    val latestCanvasHeight by rememberUpdatedState(canvasHeightPx)
+    val latestGridStep by rememberUpdatedState(gridStepPx)
+    val latestLocalWidth by rememberUpdatedState(localWidth)
+    val latestLocalHeight by rememberUpdatedState(localHeight)
+    val latestOnMoved by rememberUpdatedState(onMoved)
 
     Box(
         modifier = Modifier
@@ -824,16 +871,48 @@ private fun ControllerButton(
                 },
                 onLongClick = { onEdit() },
             )
-            .pointerInput(editMode, canvasWidthPx, canvasHeightPx, localWidth, localHeight) {
+            .pointerInput(button.id, editMode) {
                 if (!editMode) return@pointerInput
+                var rawX = localX
+                var rawY = localY
+                var snappedCellX = Int.MIN_VALUE
+                var snappedCellY = Int.MIN_VALUE
                 detectDragGestures(
+                    onDragStart = {
+                        rawX = localX
+                        rawY = localY
+                        val step = latestGridStep.coerceAtLeast(1f)
+                        snappedCellX = (rawX / step).roundToInt()
+                        snappedCellY = (rawY / step).roundToInt()
+                    },
                     onDrag = { change, dragAmount ->
                         change.consume()
-                        localX = (localX + dragAmount.x).coerceIn(0f, canvasWidthPx - localWidth)
-                        localY = (localY + dragAmount.y).coerceIn(0f, canvasHeightPx - localHeight)
+                        val maxX = (latestCanvasWidth - latestLocalWidth).coerceAtLeast(0f)
+                        val maxY = (latestCanvasHeight - latestLocalHeight).coerceAtLeast(0f)
+                        val step = latestGridStep.coerceAtLeast(1f)
+
+                        rawX = (rawX + dragAmount.x).coerceIn(0f, maxX)
+                        rawY = (rawY + dragAmount.y).coerceIn(0f, maxY)
+
+                        val cellX = (rawX / step).roundToInt()
+                        val cellY = (rawY / step).roundToInt()
+
+                        if (cellX != snappedCellX) {
+                            snappedCellX = cellX
+                            localX = (cellX * step).coerceIn(0f, maxX)
+                        }
+                        if (cellY != snappedCellY) {
+                            snappedCellY = cellY
+                            localY = (cellY * step).coerceIn(0f, maxY)
+                        }
                     },
                     onDragEnd = {
-                        onMoved(localX / canvasWidthPx, localY / canvasHeightPx)
+                        val maxX = (latestCanvasWidth - latestLocalWidth).coerceAtLeast(0f)
+                        val maxY = (latestCanvasHeight - latestLocalHeight).coerceAtLeast(0f)
+                        val step = latestGridStep.coerceAtLeast(1f)
+                        localX = snapToGrid(rawX, step).coerceIn(0f, maxX)
+                        localY = snapToGrid(rawY, step).coerceIn(0f, maxY)
+                        latestOnMoved(localX / latestCanvasWidth, localY / latestCanvasHeight)
                     },
                 )
             },
@@ -913,17 +992,40 @@ private fun ControllerButton(
                     .size(18.dp)
                     .clip(RoundedCornerShape(6.dp))
                     .background(MaterialTheme.colorScheme.primary)
-                    .pointerInput(canvasWidthPx, canvasHeightPx, button.controlType) {
+                    .pointerInput(canvasWidthPx, canvasHeightPx, button.controlType, gridStepPx) {
                         val isSlider = button.controlType != ControlType.BUTTON
                         val minW = if (isSlider) 40f else 80f
                         val minH = if (isSlider) 30f else 52f
+                        var rawWidth = localWidth
+                        var rawHeight = localHeight
                         detectDragGestures(
+                            onDragStart = {
+                                rawWidth = localWidth
+                                rawHeight = localHeight
+                            },
                             onDrag = { change, dragAmount ->
                                 change.consume()
-                                localWidth = (localWidth + dragAmount.x).coerceIn(minW, canvasWidthPx - localX)
-                                localHeight = (localHeight + dragAmount.y).coerceIn(minH, canvasHeightPx - localY)
+                                val widthBound = (canvasWidthPx - localX).coerceAtLeast(1f)
+                                val heightBound = (canvasHeightPx - localY).coerceAtLeast(1f)
+                                val minWidthBound = minW.coerceAtMost(widthBound)
+                                val minHeightBound = minH.coerceAtMost(heightBound)
+
+                                rawWidth = (rawWidth + dragAmount.x).coerceIn(minWidthBound, widthBound)
+                                rawHeight = (rawHeight + dragAmount.y).coerceIn(minHeightBound, heightBound)
+
+                                val snappedWidth = snapToGrid(rawWidth, gridStepPx).coerceIn(minWidthBound, widthBound)
+                                val snappedHeight = snapToGrid(rawHeight, gridStepPx).coerceIn(minHeightBound, heightBound)
+
+                                if (snappedWidth != localWidth) localWidth = snappedWidth
+                                if (snappedHeight != localHeight) localHeight = snappedHeight
                             },
                             onDragEnd = {
+                                val widthBound = (canvasWidthPx - localX).coerceAtLeast(1f)
+                                val heightBound = (canvasHeightPx - localY).coerceAtLeast(1f)
+                                val minWidthBound = minW.coerceAtMost(widthBound)
+                                val minHeightBound = minH.coerceAtMost(heightBound)
+                                localWidth = snapToGrid(rawWidth, gridStepPx).coerceIn(minWidthBound, widthBound)
+                                localHeight = snapToGrid(rawHeight, gridStepPx).coerceIn(minHeightBound, heightBound)
                                 onResized(localWidth / canvasWidthPx, localHeight / canvasHeightPx)
                             },
                         )
@@ -1161,6 +1263,11 @@ private fun String.hexToReadableUtf8OrNull(): String? {
     } else {
         decoded
     }
+}
+
+private fun snapToGrid(value: Float, gridStepPx: Float): Float {
+    if (gridStepPx <= 0f) return value
+    return (value / gridStepPx).roundToInt() * gridStepPx
 }
 
 private fun hasAllPermissions(context: Context, permissions: Array<String>): Boolean {
