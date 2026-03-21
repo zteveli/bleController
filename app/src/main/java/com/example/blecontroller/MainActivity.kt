@@ -94,6 +94,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -386,9 +387,13 @@ private fun ControllerScreen(
 
     val editingButton = selectedLayout?.buttons?.firstOrNull { it.id == editingButtonId }
 
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val controllerViewportHeight = maxHeight
+
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -454,8 +459,8 @@ private fun ControllerScreen(
         selectedLayout?.let { layout ->
             ControllerCanvas(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
+                    .fillMaxWidth(),
+                whiteCanvasHeight = controllerViewportHeight,
                 layout = layout,
                 services = services,
                 onEditButton = { editingButtonId = it },
@@ -481,7 +486,8 @@ private fun ControllerScreen(
                 )
             }
         }
-    }
+    } // Column
+    } // BoxWithConstraints
 
     if (showCreateDialog) {
         NameInputDialog(
@@ -571,6 +577,7 @@ private fun ControllerScreen(
 @Composable
 private fun ControllerCanvas(
     modifier: Modifier = Modifier,
+    whiteCanvasHeight: Dp,
     layout: LayoutWithButtons,
     services: List<GattServiceUi>,
     onEditButton: (Long) -> Unit,
@@ -615,7 +622,7 @@ private fun ControllerCanvas(
             BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f)
+                    .height(whiteCanvasHeight)
                     .clip(RoundedCornerShape(20.dp))
                     .background(MaterialTheme.colorScheme.surface)
                     .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp)),
